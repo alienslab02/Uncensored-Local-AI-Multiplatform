@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:llamadart/llamadart.dart';
 import 'package:path/path.dart' as p;
@@ -233,8 +232,11 @@ class LlmService extends GetxService {
 
   /// Tokens/patterns the model may emit that should be stripped from output.
   /// Covers ChatML, Llama, Gemma, Phi, Mistral, and other common formats.
+  /// Includes truncated leaks like `<end|>` (missing the opening `|`).
   static final _stopPatterns = RegExp(
     r'<\|end\|>'
+    r'|<end\|>' // truncated <|end|>
+    r'|<\|\s*end\s*\|?>'
     r'|<\|eot_id\|>'
     r'|<\|endoftext\|>'
     r'|<\|im_end\|>'
@@ -257,97 +259,215 @@ class LlmService extends GetxService {
     r'<\|user\|>|<\|im_start\|>\s*user|<start_of_turn>\s*user|\[INST\]',
   );
 
-  /// Generate a streaming response.
-  /// [messages] is a list of {role, content} maps.
-  /// [systemPrompt] is prepended as a system message.
-  /// Returns a Stream of String tokens.
-  Stream<String> generate({
-    required List<Map<String, String>> messages,
-    String? systemPrompt,
-    double temperature = 0.7,
-  }) async* {
-    if (_engine == null || !isLoaded.value) {
-      throw StateError('No model loaded. Call loadModel() first.');
+  /// Earliest index of a chat-template / stop leak. -1 if none.
+  static int _controlLeakIndex(String text) {
+    const markers = <String>[
+      '<|',
+      '<end|>',
+      '<end_of_turn>',
+      '<start_of_turn>',
+      '</s>',
+      '[INST]',
+      '[/INST]',
+      '[end]',
+    ];
+    var cut = -1;
+    for (final m in markers) {
+      final i = text.indexOf(m);
+      if (i >= 0 && (cut < 0 || i < cut)) cut = i;
     }
-    if (isGenerating.value) {
-      throw StateError('Another generation is already in progress.');
-    }
-
-    isGenerating.value = true;
-    tokensPerSecond.value = 0.0;
-    final stopwatch = Stopwatch()..start();
-    int tokenCount = 0;
-
-    // Buffer to detect multi-token stop sequences
-    String buffer = '';
-
-    try {
-      // Build the full prompt from messages
-      final prompt = _buildPrompt(messages, systemPrompt);
-
-      await for (final token in _engine!.generate(prompt)) {
-        tokenCount++;
-        if (stopwatch.elapsedMilliseconds > 0) {
-          tokensPerSecond.value =
-              tokenCount / (stopwatch.elapsedMilliseconds / 1000);
-        }
-
-        // Accumulate into buffer for stop-pattern detection
-        buffer += token;
-
-        // Check if model is hallucinating a user turn — stop immediately
-        if (_userTurnPattern.hasMatch(buffer)) {
-          final cleaned = buffer
-              .replaceAll(_stopPatterns, '')
-              .replaceAll(_userTurnPattern, '')
-              .trim();
-          if (cleaned.isNotEmpty) {
-            yield cleaned;
-          }
-          break;
-        }
-
-        // Check if buffer contains any stop pattern
-        if (_stopPatterns.hasMatch(buffer)) {
-          // Yield everything before the stop pattern, then stop
-          final cleaned = buffer.replaceAll(_stopPatterns, '').trim();
-          if (cleaned.isNotEmpty) {
-            yield cleaned;
-          }
-          break;
-        }
-
-        // If buffer is getting long enough that we know it's safe, flush it
-        // Keep last 30 chars to detect split stop sequences
-        if (buffer.length > 40) {
-          final safe = buffer.substring(0, buffer.length - 30);
-          buffer = buffer.substring(buffer.length - 30);
-          yield safe;
-        }
-      }
-
-      // Flush any remaining buffer (cleaning all control patterns)
-      if (buffer.isNotEmpty) {
-        final cleaned = buffer
-            .replaceAll(_stopPatterns, '')
-            .replaceAll(_userTurnPattern, '')
-            .trim();
-        if (cleaned.isNotEmpty) {
-          yield cleaned;
-        }
-      }
-    } finally {
-      stopwatch.stop();
-      lastGenerationTokens.value = tokenCount;
-      lastGenerationSpeed.value = tokensPerSecond.value;
-      isGenerating.value = false;
-    }
+    return cut;
   }
 
-  /// Generate a chat completion using llamadart's chat-template API.
-  Stream<String> generateChatCompletion({
+  /// If the model emitted the same reply twice back-to-back (`A` + `A`),
+  /// keep a single copy. Exact match only (optional whitespace between).
+  static String collapseExactRepeatedReply(String text) {
+    final t = text.trim();
+    if (t.length < 40) return t;
+
+    if (t.length.isEven) {
+      final mid = t.length ~/ 2;
+      final a = t.substring(0, mid);
+      if (a == t.substring(mid)) return a;
+    }
+
+    final mid = t.length ~/ 2;
+    final lo = mid - 48 < 20 ? 20 : mid - 48;
+    final hi = mid + 48 > t.length - 20 ? t.length - 20 : mid + 48;
+    for (var i = lo; i <= hi; i++) {
+      final a = t.substring(0, i).trimRight();
+      final b = t.substring(i).trimLeft();
+      if (a.length >= 20 && a == b) return a;
+    }
+    return t;
+  }
+
+  /// Strip stop/control token leaks from assistant text (chat UI + voice).
+  /// Emotion tags like `[chuckle]` are kept.
+  static String stripControlTokens(String raw) {
+    var text = raw;
+    final leak = _controlLeakIndex(text);
+    if (leak >= 0) {
+      text = text.substring(0, leak);
+    }
+    final stop = _stopPatterns.firstMatch(text);
+    if (stop != null) {
+      text = text.substring(0, stop.start);
+    }
+    final user = _userTurnPattern.firstMatch(text);
+    if (user != null) {
+      text = text.substring(0, user.start);
+    }
+    text = text
+        // Orphan / half tokens still left after a bad stream flush
+        .replaceAll(RegExp(r'<\|[^|>]*\|?>?'), '')
+        .replaceAll(RegExp(r'<?end\|>'), '')
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n');
+    text = collapseExactRepeatedReply(text);
+    text = dedupeTrailingEcho(text);
+    return text.trim();
+  }
+
+  /// True if [next] is a truncated/echoed copy of the end of [emitted].
+  /// Catches: `…my dear.` + ` at sparks your interest, my dear.`
+  static bool _isEchoChunk(String emitted, String next) {
+    final a = emitted;
+    final b = next.trim(); // leading space on echoes is common
+    if (a.isEmpty || b.length < 10) return false;
+    if (a.endsWith(b) || a.trimRight().endsWith(b)) return true;
+
+    // Allow a few missing/extra leading chars on the repeated tail
+    for (var skip = 0; skip <= 8 && skip < b.length; skip++) {
+      final frag = b.substring(skip);
+      if (frag.length < 10) break;
+      if (a.endsWith(frag)) return true;
+      if (frag.length <= a.length) {
+        final suf = a.substring(a.length - frag.length);
+        if (suf == frag) return true;
+        // Same tail with 1–3 char prefix mismatch ("what" vs "at")
+        for (var d = 1; d <= 3; d++) {
+          final n = frag.length - d;
+          if (n >= 10 &&
+              suf.length >= n &&
+              frag.length >= n &&
+              suf.substring(suf.length - n) == frag.substring(frag.length - n)) {
+            return true;
+          }
+        }
+      }
+    }
+
+    // Near-duplicate consecutive windows at the join point
+    final combined = a + b;
+    for (var n = 12; n <= b.length && n * 2 <= combined.length; n++) {
+      final second = combined.substring(combined.length - n);
+      final first =
+          combined.substring(combined.length - 2 * n, combined.length - n);
+      for (var m = n; m >= n - 3 && m >= 10; m--) {
+        if (first.length >= m &&
+            second.length >= m &&
+            first.substring(first.length - m) ==
+                second.substring(second.length - m)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Remove a trailing echoed clause inside one string
+  /// (`…my dear. at sparks your interest, my dear.` → `…my dear.`).
+  static String dedupeTrailingEcho(String text) {
+    if (text.length < 24) return text;
+    var t = text;
+    for (var guard = 0; guard < 6; guard++) {
+      var cutAt = -1;
+      // Cap echo length — model glitches are short tails, not half the reply
+      final limit = t.length < 80 ? t.length ~/ 2 : 120;
+      final maxN = limit < t.length ~/ 2 ? limit : t.length ~/ 2;
+      // Shortest match first so we don't chop a good sentence + its echo together
+      for (var n = 12; n <= maxN; n++) {
+        final second = t.substring(t.length - n);
+        final before = t.substring(0, t.length - n);
+        final st = second.trimLeft();
+        if (st.length < 10) continue;
+        // Glitch echoes usually restart mid-sentence (lowercase) after `.!?`
+        final startsLower = RegExp(r'^[a-z]').hasMatch(st);
+        final afterSentence = RegExp(r'[.!?…]\s*$').hasMatch(before.trimRight());
+        if (!startsLower && !afterSentence) continue;
+        if (!startsLower && afterSentence) {
+          // Capitalized restart — only accept if strong shared ending
+          final check = st.length < 18 ? st.length : 18;
+          final tail = st.substring(st.length - check);
+          if (!before.trimRight().endsWith(tail)) {
+            final bt = before.trimRight();
+            if (bt.length < check) continue;
+            final btTail = bt.substring(bt.length - check);
+            final m = check - 2;
+            if (m < 10 ||
+                btTail.substring(btTail.length - m) !=
+                    tail.substring(tail.length - m)) {
+              continue;
+            }
+          }
+        }
+        if (_isEchoChunk(before, second)) {
+          cutAt = before.length;
+          break;
+        }
+      }
+      if (cutAt < 0) break;
+      t = t.substring(0, cutAt).trimRight();
+    }
+    return t;
+  }
+
+  /// Stop strings that end a turn if the model emits them as text.
+  /// Primary stop is the model's EOS via chat-template; these are backups.
+  static const List<String> _defaultStopSequences = [
+    '<end_of_turn>',
+    '<start_of_turn>',
+    '<|end|>',
+    '<end|>',
+    '<|eot_id|>',
+    '<|im_end|>',
+    '</s>',
+  ];
+
+  /// Convert UI {role, content} maps (+ optional system) to chat messages.
+  static List<LlamaChatMessage> _toChatMessages(
+    List<Map<String, String>> messages,
+    String? systemPrompt,
+  ) {
+    final out = <LlamaChatMessage>[];
+    if (systemPrompt != null && systemPrompt.trim().isNotEmpty) {
+      out.add(
+        LlamaChatMessage.fromText(
+          role: LlamaChatRole.system,
+          text: systemPrompt.trim(),
+        ),
+      );
+    }
+    for (final msg in messages) {
+      final role = switch (msg['role']) {
+        'system' => LlamaChatRole.system,
+        'assistant' => LlamaChatRole.assistant,
+        _ => LlamaChatRole.user,
+      };
+      out.add(
+        LlamaChatMessage.fromText(
+          role: role,
+          text: msg['content'] ?? '',
+        ),
+      );
+    }
+    return out;
+  }
+
+  /// Shared streaming path: model's GGUF chat template + EOS (not raw prompt).
+  Stream<String> _streamChatCompletion({
     required List<LlamaChatMessage> messages,
-    GenerationParams params = const GenerationParams(),
+    required GenerationParams params,
   }) async* {
     if (_engine == null || !isLoaded.value) {
       throw StateError('No model loaded. Call loadModel() first.');
@@ -359,7 +479,8 @@ class LlmService extends GetxService {
     isGenerating.value = true;
     tokensPerSecond.value = 0.0;
     final stopwatch = Stopwatch()..start();
-    int tokenCount = 0;
+    var tokenCount = 0;
+    var emitted = '';
 
     try {
       await for (final chunk in _engine!.create(
@@ -376,6 +497,39 @@ class LlmService extends GetxService {
           tokensPerSecond.value =
               tokenCount / (stopwatch.elapsedMilliseconds / 1000);
         }
+
+        // Cut if a control leak still slips through as text
+        final merged = emitted + content;
+        final leakAt = _controlLeakIndex(merged);
+        final stop = _stopPatterns.firstMatch(merged);
+        final user = _userTurnPattern.firstMatch(merged);
+        var cutAt = -1;
+        if (leakAt >= 0) cutAt = leakAt;
+        if (stop != null && (cutAt < 0 || stop.start < cutAt)) {
+          cutAt = stop.start;
+        }
+        if (user != null && (cutAt < 0 || user.start < cutAt)) {
+          cutAt = user.start;
+        }
+        if (cutAt >= 0) {
+          if (cutAt > emitted.length) {
+            yield merged.substring(emitted.length, cutAt);
+          }
+          break;
+        }
+
+        // Exact A+A mid-stream: stop yielding the second copy
+        final collapsed = collapseExactRepeatedReply(merged);
+        if (collapsed.length < merged.length &&
+            collapsed.length >= emitted.length) {
+          if (collapsed.length > emitted.length) {
+            yield collapsed.substring(emitted.length);
+          }
+          emitted = collapsed;
+          break;
+        }
+
+        emitted = merged;
         yield content;
       }
     } finally {
@@ -384,6 +538,38 @@ class LlmService extends GetxService {
       lastGenerationSpeed.value = tokensPerSecond.value;
       isGenerating.value = false;
     }
+  }
+
+  /// Generate a streaming response for in-app chat / voice.
+  ///
+  /// Uses the GGUF's native chat template (via [LlamaEngine.create]) so the
+  /// model receives correct turn markers and stops on EOS — not a hand-rolled
+  /// ChatML string that Gemma will ignore and then re-emit as a second copy.
+  Stream<String> generate({
+    required List<Map<String, String>> messages,
+    String? systemPrompt,
+    double temperature = 0.7,
+  }) {
+    final chatMessages = _toChatMessages(messages, systemPrompt);
+    final params = GenerationParams(
+      temp: temperature,
+      topP: 0.95,
+      minP: 0.05,
+      penalty: 1.0,
+      stopSequences: _defaultStopSequences,
+    );
+    return _streamChatCompletion(messages: chatMessages, params: params);
+  }
+
+  /// Generate a chat completion using llamadart's chat-template API.
+  Stream<String> generateChatCompletion({
+    required List<LlamaChatMessage> messages,
+    GenerationParams params = const GenerationParams(),
+  }) {
+    final withStops = params.stopSequences.isEmpty
+        ? params.copyWith(stopSequences: _defaultStopSequences)
+        : params;
+    return _streamChatCompletion(messages: messages, params: withStops);
   }
 
   Future<int> countTokens(String text) async {
@@ -429,31 +615,6 @@ class LlmService extends GetxService {
       final wakelockService = Get.find<WakelockService>();
       await wakelockService.disable();
     } catch (_) {}
-  }
-
-  /// Build a single prompt string from chat messages.
-  String _buildPrompt(
-    List<Map<String, String>> messages,
-    String? systemPrompt,
-  ) {
-    final buffer = StringBuffer();
-
-    if (systemPrompt != null && systemPrompt.isNotEmpty) {
-      buffer.writeln('<|system|>');
-      buffer.writeln(systemPrompt);
-      buffer.writeln('<|end|>');
-    }
-
-    for (final msg in messages) {
-      final role = msg['role'] ?? 'user';
-      final content = msg['content'] ?? '';
-      buffer.writeln('<|$role|>');
-      buffer.writeln(content);
-      buffer.writeln('<|end|>');
-    }
-
-    buffer.writeln('<|assistant|>');
-    return buffer.toString();
   }
 
   @override

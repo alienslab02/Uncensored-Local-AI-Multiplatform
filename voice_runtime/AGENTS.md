@@ -5,7 +5,8 @@ Host-native FastAPI sidecar for Flutter voice chat. **Not Docker.** Product voic
 ## Purpose
 
 - `POST /transcribe` — faster-whisper
-- `POST /speak` — pluggable TTS (`VOICE_TTS_BACKEND`)
+- `POST /speak` — pluggable TTS (`VOICE_TTS_BACKEND`); `voice` = catalog id
+- `GET /voices` / `POST /voices` / `DELETE /voices?id=ref:…` — list / import / remove clone WAVs
 - `GET /health` — readiness + active backend
 
 Listens on `127.0.0.1:8765`. Flutter starts this via `VoiceRuntimeService` when the user taps the mic.

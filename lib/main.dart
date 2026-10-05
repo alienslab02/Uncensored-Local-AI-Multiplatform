@@ -49,22 +49,22 @@ Future<void> main() async {
     // Load theme preference
     final themeController = Get.put(ThemeController());
 
-    runApp(PortableAIApp(themeController: themeController));
+    runApp(MateApp(themeController: themeController));
   }, (error, stack) {
     // Last-resort error handler — prevents silent force-close
     debugPrint('Unhandled error: $error\n$stack');
   });
 }
 
-class PortableAIApp extends StatelessWidget {
+class MateApp extends StatelessWidget {
   final ThemeController themeController;
-  
-  const PortableAIApp({super.key, required this.themeController});
+
+  const MateApp({super.key, required this.themeController});
 
   @override
   Widget build(BuildContext context) {
     return GetMaterialApp(
-      title: 'Uncensored Local AI',
+      title: 'Mate',
       debugShowCheckedModeBanner: false,
       themeMode: themeController.themeMode,
       theme: AppTheme.lightTheme,

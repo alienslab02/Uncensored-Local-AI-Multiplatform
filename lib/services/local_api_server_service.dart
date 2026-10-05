@@ -222,7 +222,7 @@ class LocalApiServerService extends GetxService {
               'id': modelId,
               'object': 'model',
               'created': 0,
-              'owned_by': 'uncensored-local-ai',
+              'owned_by': 'mate',
             },
           ]
         : <Map<String, dynamic>>[];
@@ -235,7 +235,7 @@ class LocalApiServerService extends GetxService {
       await _writeError(
         request.response,
         HttpStatus.serviceUnavailable,
-        'No model loaded. Load a model in Uncensored Local AI first.',
+        'No model loaded. Load a model in Mate first.',
         type: 'invalid_request_error',
         code: 'model_not_loaded',
       );

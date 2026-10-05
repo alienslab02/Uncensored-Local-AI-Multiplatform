@@ -8,12 +8,14 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from tts import get_tts_backend
 from tts.kokoro_backend import DEFAULT_VOICE, configure_espeak
+from tts.voices import catalog as voices_catalog
+from tts.voices import delete_reference_voice, import_reference_wav, resolve_voice
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -24,7 +26,8 @@ PORT = int(os.environ.get("VOICE_RUNTIME_PORT", "8765"))
 
 class SpeakRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
-    voice: str = Field(default=DEFAULT_VOICE)
+    # Catalog id (`kokoro:af_heart`, `ref:my_clone`) or bare Kokoro preset / WAV path
+    voice: str = Field(default="")
     language_id: str | None = Field(default=None)
     exaggeration: float | None = Field(default=None, ge=0.0, le=2.0)
     reference_wav: str | None = Field(default=None)
@@ -70,20 +73,24 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Uncensored Local AI Voice Runtime", lifespan=lifespan)
+app = FastAPI(title="Mate Voice Runtime", lifespan=lifespan)
 
 
 @app.get("/health")
 def health() -> dict:
     tts_ready = state.tts is not None
+    active = state.tts_meta.get("active")
+    cat = voices_catalog(active_backend=active if isinstance(active, str) else None)
     tts_info = {
         "ready": tts_ready,
         "default_voice": DEFAULT_VOICE,
+        "selected_voice": cat.get("default_id"),
         "error": state.tts_error or state.tts_meta.get("error"),
         "requested": state.tts_meta.get("requested"),
-        "active": state.tts_meta.get("active"),
+        "active": active,
         "fallback_used": bool(state.tts_meta.get("fallback_used")),
         "available": state.tts_meta.get("available"),
+        "voice_count": len(cat.get("voices") or []),
     }
     if state.tts is not None:
         tts_info.update(state.tts.health())
@@ -98,6 +105,46 @@ def health() -> dict:
         "host": HOST,
         "port": PORT,
     }
+
+
+@app.get("/voices")
+def list_voices() -> dict:
+    active = state.tts_meta.get("active")
+    return voices_catalog(active_backend=active if isinstance(active, str) else None)
+
+
+@app.post("/voices")
+async def upload_voice(
+    audio: UploadFile = File(...),
+    name: str | None = Form(default=None),
+) -> dict:
+    raw = await audio.read()
+    filename = name or audio.filename or "custom_voice.wav"
+    if not filename.lower().endswith(".wav"):
+        filename = f"{Path(filename).stem}.wav"
+    try:
+        entry = import_reference_wav(filename, raw)
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e)) from e
+    except OSError as e:
+        raise HTTPException(500, detail=f"save failed: {e}") from e
+    return {"ok": True, "voice": entry}
+
+
+@app.delete("/voices")
+def remove_voice(id: str) -> dict:
+    """Delete a custom clone (`id=ref:…`). Built-in Kokoro presets are not removable."""
+    try:
+        result = delete_reference_voice(id)
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(404, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(403, detail=str(e)) from e
+    except OSError as e:
+        raise HTTPException(500, detail=f"delete failed: {e}") from e
+    return {"ok": True, **result}
 
 
 @app.post("/transcribe")
@@ -184,7 +231,14 @@ def _normalize_paralinguistic_tags(text: str) -> str:
 def _sanitize_tts_text(raw: str) -> str:
     """Strip model control tokens / markdown; normalize Chatterbox tags."""
     text = raw.strip()
-    text = re.sub(r"<\|[^|>]+?\|>", " ", text)
+    # Cut at first control leak (incl. truncated `<end|>` without opening `|`)
+    for marker in ("<|", "<end|>", "<end_of_turn>", "<start_of_turn>", "</s>"):
+        i = text.find(marker)
+        if i >= 0:
+            text = text[:i]
+            break
+    text = re.sub(r"<\|[^|>]*\|?>?", " ", text)
+    text = re.sub(r"<?end\|>", " ", text)
     text = re.sub(r"</?(?:end_of_turn|start_of_turn|s|pad)(?:\s[^>]*)?>", " ", text, flags=re.I)
     # Markdown emphasis only — keep [] for paralinguistic tags
     text = re.sub(r"[`*_#~>{}|\\]", " ", text)
@@ -205,12 +259,20 @@ def speak(body: SpeakRequest) -> Response:
         raise HTTPException(400, detail="nothing speakable after sanitize")
 
     try:
+        resolved = resolve_voice(body.voice or None)
+    except FileNotFoundError as e:
+        raise HTTPException(404, detail=str(e)) from e
+
+    ref = body.reference_wav or resolved.get("reference_wav")
+    preset = resolved.get("voice") or DEFAULT_VOICE
+
+    try:
         result = state.tts.speak(
             text,
-            voice=body.voice or DEFAULT_VOICE,
+            voice=preset,
             language_id=body.language_id,
             exaggeration=body.exaggeration,
-            reference_wav=body.reference_wav,
+            reference_wav=ref,
         )
     except ValueError as e:
         raise HTTPException(422, detail=str(e)) from e

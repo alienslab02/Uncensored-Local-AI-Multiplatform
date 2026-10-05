@@ -8,7 +8,7 @@ include_directories(SYSTEM /usr/include/x86_64-linux-gnu/c++/13)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "portable_ai_flutter")
+set(BINARY_NAME "Mate")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
 set(APPLICATION_ID "com.portableai.portable_ai_flutter")

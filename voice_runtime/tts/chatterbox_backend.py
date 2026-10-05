@@ -119,13 +119,26 @@ class _ChatterboxTurboFamily(TtsBackend):
         reference_wav: str | None = None,
         **kwargs: Any,
     ) -> SpeakResult:
-        del voice, language_id, kwargs
+        del language_id, kwargs
         if self._model is None:
             raise RuntimeError(f"{self.name} not loaded")
 
         gen_kwargs: dict[str, Any] = {}
-        if reference_wav:
-            gen_kwargs["audio_prompt_path"] = reference_wav
+        ref_path = reference_wav
+        if not ref_path and voice:
+            # Allow catalog stems / bare filenames under reference dirs
+            from .voices import resolve_voice
+
+            try:
+                resolved = resolve_voice(
+                    voice if voice.startswith("ref:") or voice.endswith(".wav")
+                    else f"ref:{voice}"
+                )
+                ref_path = resolved.get("reference_wav")
+            except Exception:  # noqa: BLE001
+                ref_path = None
+        if ref_path:
+            gen_kwargs["audio_prompt_path"] = ref_path
         elif self._ref is not None and self._ref.is_file():
             gen_kwargs["audio_prompt_path"] = str(self._ref)
         if exaggeration is not None:

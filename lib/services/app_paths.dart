@@ -35,7 +35,14 @@ class AppPaths {
 
     _root = Directory(await _resolveRootPath());
 
-    for (final sub in ['hive', 'models', 'voice', 'logs', 'cache']) {
+    for (final sub in [
+      'hive',
+      'models',
+      'voice',
+      'voice/references',
+      'logs',
+      'cache',
+    ]) {
       await Directory(p.join(_root!.path, sub)).create(recursive: true);
     }
 
@@ -82,6 +89,8 @@ class AppPaths {
   static String get hiveDir => p.join(root, 'hive');
   static String get modelsDir => p.join(root, 'models');
   static String get voiceDir => p.join(root, 'voice');
+  /// Custom Chatterbox clone WAVs (`ref:<stem>` catalog ids).
+  static String get voiceReferencesDir => p.join(root, 'voice', 'references');
   static String get logsDir => p.join(root, 'logs');
   static String get cacheDir => p.join(root, 'cache');
 

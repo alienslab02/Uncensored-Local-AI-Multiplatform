@@ -123,4 +123,11 @@ class ChatStorageService extends GetxService {
 
   set voiceTtsBackend(String value) =>
       _settingsBox.put('voice_tts_backend', value);
+
+  /// Selected TTS voice catalog id (`kokoro:af_heart`, `ref:my_clone`, …).
+  String get voiceTtsVoice =>
+      _settingsBox.get('voice_tts_voice', defaultValue: '') as String;
+
+  set voiceTtsVoice(String value) =>
+      _settingsBox.put('voice_tts_voice', value);
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:path/path.dart' as p;
 
@@ -23,14 +24,19 @@ enum VoiceChatPhase {
   error,
 }
 
-/// Tap mic → listen → tap again → STT → LLM → TTS → play.
+/// Hold-to-talk: press key/mic → listen → release → STT → LLM → TTS → play.
 class VoiceChatController extends GetxController {
   final phase = VoiceChatPhase.idle.obs;
-  final statusText = 'Tap mic to talk'.obs;
+  final statusText = 'Hold Right ⌥ (Option) or mic to talk'.obs;
   final lastTranscript = ''.obs;
   final lastError = ''.obs;
   final turnBusy = false.obs;
   final canSend = false.obs;
+
+  /// Desktop PTT key (macOS Right Option). Does not conflict with typing.
+  static const pttKey = LogicalKeyboardKey.altRight;
+  static const pttKeyLabel = 'Right ⌥';
+  static const idleHint = 'Hold Right ⌥ (Option) or mic to talk';
 
   static const _minListen = Duration(milliseconds: 900);
   static const _voiceSystemHint =
@@ -41,6 +47,7 @@ class VoiceChatController extends GetxController {
       '[whispering], [gasp], [cough]. Never invent tags like [smile].';
 
   var _stopRequested = false;
+  var _pttHeld = false;
   Timer? _listenTicker;
   /// Chains enqueue order while allowing parallel /speak synthesis.
   Future<void> _speakChain = Future<void>.value();
@@ -61,17 +68,79 @@ class VoiceChatController extends GetxController {
       phase.value == VoiceChatPhase.speaking ||
       turnBusy.value;
 
-  Future<void> onMicTapped() async {
-    if (phase.value == VoiceChatPhase.recording) {
-      if (!canSend.value) {
-        statusText.value = 'Keep speaking… (${_remainingMs()}ms)';
-        return;
-      }
-      await _finishListeningAndRunTurn();
-      return;
-    }
+  @override
+  void onInit() {
+    super.onInit();
+    HardwareKeyboard.instance.addHandler(_onKeyEvent);
+  }
+
+  /// Press-and-hold start (keyboard or mic button).
+  Future<void> onPttPress() async {
+    if (_pttHeld) return;
+    if (phase.value == VoiceChatPhase.recording) return;
     if (isProcessing) return;
+
+    _pttHeld = true;
     await _startListening();
+
+    // Released while still starting — finish as soon as recording begins.
+    if (!_pttHeld && phase.value == VoiceChatPhase.recording) {
+      await _releaseAfterMinListen();
+    }
+    _notifyErrorIfNeeded();
+  }
+
+  /// Release ends the utterance and runs the voice turn.
+  Future<void> onPttRelease() async {
+    if (!_pttHeld) return;
+    _pttHeld = false;
+
+    if (phase.value == VoiceChatPhase.starting) {
+      for (var i = 0; i < 80; i++) {
+        if (phase.value == VoiceChatPhase.recording) break;
+        if (phase.value != VoiceChatPhase.starting) return;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    if (phase.value != VoiceChatPhase.recording) return;
+    await _releaseAfterMinListen();
+    _notifyErrorIfNeeded();
+  }
+
+  Future<void> _releaseAfterMinListen() async {
+    while (phase.value == VoiceChatPhase.recording &&
+        _recorder.elapsed < _minListen) {
+      statusText.value = 'Got it… (${_remainingMs()}ms)';
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (phase.value == VoiceChatPhase.recording) {
+      await _finishListeningAndRunTurn();
+    }
+  }
+
+  bool _onKeyEvent(KeyEvent event) {
+    if (event.logicalKey != pttKey) return false;
+    if (event is KeyDownEvent) {
+      unawaited(onPttPress());
+      return true;
+    }
+    if (event is KeyUpEvent) {
+      unawaited(onPttRelease());
+      return true;
+    }
+    return false;
+  }
+
+  void _notifyErrorIfNeeded() {
+    if (phase.value != VoiceChatPhase.error || lastError.value.isEmpty) return;
+    if (lastError.value.contains('Microphone permission')) return;
+    Get.snackbar(
+      'Voice',
+      lastError.value,
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 6),
+    );
   }
 
   int _remainingMs() {
@@ -85,7 +154,7 @@ class VoiceChatController extends GetxController {
     canSend.value = false;
 
     if (!_llm.isLoaded.value) {
-      _fail('Load a model first, then tap the mic');
+      _fail('Load a model first, then hold $pttKeyLabel or the mic');
       return;
     }
 
@@ -114,7 +183,7 @@ class VoiceChatController extends GetxController {
 
       await _recorder.start();
       phase.value = VoiceChatPhase.recording;
-      statusText.value = 'Listening… speak, then tap mic to send';
+      statusText.value = 'Listening… release $pttKeyLabel / mic to send';
       turnBusy.value = false;
 
       _listenTicker?.cancel();
@@ -127,9 +196,9 @@ class VoiceChatController extends GetxController {
           statusText.value =
               'Listening… speak (${(_remainingMs() / 1000).toStringAsFixed(1)}s)';
         } else if (hearing) {
-          statusText.value = 'Hearing you… tap mic to send';
+          statusText.value = 'Hearing you… release to send';
         } else {
-          statusText.value = 'Listening… tap mic to send';
+          statusText.value = 'Listening… release to send';
         }
       });
     } catch (e) {
@@ -145,12 +214,13 @@ class VoiceChatController extends GetxController {
   Future<void> _failMicDenied() async {
     phase.value = VoiceChatPhase.error;
     lastError.value =
-        'Microphone permission is off. Enable “Portable AI” (or portable_ai_flutter) in System Settings → Privacy & Security → Microphone, then tap mic again.';
+        'Microphone permission is off. Enable “Mate” in System Settings → Privacy & Security → Microphone, then try again.';
     statusText.value = lastError.value;
     turnBusy.value = false;
+    _pttHeld = false;
     Get.snackbar(
       'Microphone blocked',
-      'Enable Portable AI in Microphone settings, then tap mic again',
+      'Enable Mate in Microphone settings, then hold $pttKeyLabel or mic',
       snackPosition: SnackPosition.BOTTOM,
       duration: const Duration(seconds: 8),
       mainButton: TextButton(
@@ -178,7 +248,7 @@ class VoiceChatController extends GetxController {
       final wavBytes = _recorder.lastWavBytes;
       if (wavBytes == null || wavBytes.length < 1000) {
         _fail(
-          'No speech captured — tap mic, speak clearly for 1–2 seconds, tap again',
+          'No speech captured — hold $pttKeyLabel or mic and speak clearly for 1–2 seconds',
         );
         return;
       }
@@ -306,16 +376,7 @@ class VoiceChatController extends GetxController {
       if (aiMsg.content.isEmpty) aiMsg.content = '⚠ Error: $e';
       rethrow;
     } finally {
-      aiMsg.content = aiMsg.content
-          .replaceAll(
-            RegExp(
-              r'<\|end\|>|<\|eot_id\|>|<\|endoftext\|>|<\|im_end\|>|<\|im_start\|>'
-              r'|<end_of_turn>|<start_of_turn>|<\|assistant\|>|<\|user\|>|<\|system\|>'
-              r'|<\|pad\|>|</s>|<s>|\[INST\]|\[/INST\]|\[end\]',
-            ),
-            '',
-          )
-          .trim();
+      aiMsg.content = LlmService.stripControlTokens(aiMsg.content);
       _chat.isGenerating.value = false;
       _chat.streamedResponse.value = '';
       chat.updatedAt = DateTime.now();
@@ -323,7 +384,7 @@ class VoiceChatController extends GetxController {
       _chat.chats.refresh();
       if (!_stopRequested) {
         phase.value = VoiceChatPhase.idle;
-        statusText.value = 'Tap mic to talk';
+        statusText.value = idleHint;
       }
       turnBusy.value = false;
     }
@@ -356,6 +417,7 @@ class VoiceChatController extends GetxController {
     'smiling': 'happy',
     'grin': 'happy',
     'giggle': 'chuckle',
+    'chuckling': 'chuckle',
     'lol': 'laugh',
     'haha': 'laugh',
     'cry': 'crying',
@@ -370,12 +432,21 @@ class VoiceChatController extends GetxController {
 
   /// Strip model control tokens / markdown; normalize Chatterbox tags.
   String _sanitizeForTts(String raw) {
-    var text = raw.trim();
+    var text = LlmService.stripControlTokens(raw.trim());
     text = text.replaceAll(
       RegExp(
-        r'<\|[^|>]+?\|>'
+        r'<\|[^|>]*\|?>?'
+        r'|<?end\|>'
         r'|</?(?:end_of_turn|start_of_turn|s|pad)(?:\s[^>]*)?>',
         caseSensitive: false,
+      ),
+      ' ',
+    );
+    // Drop emoji — voice tags carry emotion instead
+    text = text.replaceAll(
+      RegExp(
+        r'[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]',
+        unicode: true,
       ),
       ' ',
     );
@@ -436,6 +507,7 @@ class VoiceChatController extends GetxController {
 
   Future<void> cancel() async {
     _stopRequested = true;
+    _pttHeld = false;
     _listenTicker?.cancel();
     await _recorder.cancel();
     await _playback.stop();
@@ -443,13 +515,14 @@ class VoiceChatController extends GetxController {
     // Reset speak chain so a later turn does not wait on cancelled work.
     _speakChain = Future<void>.value();
     phase.value = VoiceChatPhase.idle;
-    statusText.value = 'Tap mic to talk';
+    statusText.value = idleHint;
     turnBusy.value = false;
     canSend.value = false;
   }
 
   void _fail(String message) {
     _listenTicker?.cancel();
+    _pttHeld = false;
     phase.value = VoiceChatPhase.error;
     lastError.value = message;
     statusText.value = message;
@@ -459,6 +532,7 @@ class VoiceChatController extends GetxController {
 
   @override
   void onClose() {
+    HardwareKeyboard.instance.removeHandler(_onKeyEvent);
     _listenTicker?.cancel();
     super.onClose();
   }

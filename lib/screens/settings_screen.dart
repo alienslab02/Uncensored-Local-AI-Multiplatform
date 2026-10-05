@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -297,6 +298,16 @@ class _SettingsBody extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 _VoiceTtsSettingsCard(storage: storage),
+                const SizedBox(height: 20),
+                _sectionHeader(context, 'Voices'),
+                const SizedBox(height: 8),
+                Text(
+                  'Pick a speaking voice. Chatterbox uses clone WAVs; Kokoro uses built-in presets. '
+                  'Add your own WAV (clear speech, ideally >5s) for a custom clone.',
+                  style: TextStyle(fontSize: 12, color: context.textD),
+                ),
+                const SizedBox(height: 12),
+                const _VoicePickerCard(),
                 const SizedBox(height: 28),
               ],
 
@@ -671,7 +682,7 @@ class _SettingsBody extends StatelessWidget {
                 child: Column(
                   children: [
                     Text(
-                      'Uncensored Local AI v2.0.0',
+                      'Mate v2.0.0',
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
@@ -952,6 +963,311 @@ class _VoiceTtsSettingsCardState extends State<_VoiceTtsSettingsCard> {
               style: TextStyle(fontSize: 11, color: context.textD),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VoicePickerCard extends StatefulWidget {
+  const _VoicePickerCard();
+
+  @override
+  State<_VoicePickerCard> createState() => _VoicePickerCardState();
+}
+
+class _VoicePickerCardState extends State<_VoicePickerCard> {
+  bool _importing = false;
+
+  VoiceRuntimeService get _voice => Get.find<VoiceRuntimeService>();
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_voice.refreshVoices());
+  }
+
+  Future<void> _pickAndImport() async {
+    if (_importing) return;
+    setState(() => _importing = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['wav'],
+        allowMultiple: false,
+        withData: false,
+      );
+      final path = result?.files.single.path;
+      if (path == null || path.isEmpty) return;
+      final opt = await _voice.importReferenceWav(path);
+      if (!mounted) return;
+      Get.snackbar(
+        opt != null ? 'Voice added' : 'Import failed',
+        opt != null
+            ? 'Selected “${opt.label}”. Use a Chatterbox engine for clones.'
+            : _voice.lastError.value,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 5),
+      );
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  Future<void> _select(VoiceOption opt) async {
+    await _voice.applyTtsVoice(opt.id);
+    if (!mounted) return;
+    Get.snackbar(
+      'Voice',
+      'Using “${opt.label}”',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 2),
+    );
+  }
+
+  Future<void> _confirmDelete(VoiceOption opt) async {
+    if (!opt.isReference) return;
+    final ok = await Get.dialog<bool>(
+          AlertDialog(
+            title: const Text('Remove voice?'),
+            content: Text(
+              'Delete “${opt.label}” from your custom clones? '
+              'This removes the WAV file from Mate’s voice library.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Get.back(result: false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Get.back(result: true),
+                child: Text(
+                  'Remove',
+                  style: TextStyle(color: AppColors.red),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+    final deleted = await _voice.deleteReferenceVoice(opt.id);
+    if (!mounted) return;
+    Get.snackbar(
+      deleted ? 'Voice removed' : 'Remove failed',
+      deleted ? '“${opt.label}” deleted' : _voice.lastError.value,
+      snackPosition: SnackPosition.BOTTOM,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: context.bgPanel,
+        border: Border.all(color: context.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Obx(() {
+          final list = _voice.voices.toList();
+          final selected = _voice.selectedVoiceId.value;
+          final loading = _voice.voicesLoading.value;
+          final backend = _voice.activeBackend.value.isNotEmpty
+              ? _voice.activeBackend.value
+              : _voice.resolvedTtsBackend;
+          final refs =
+              list.where((v) => v.isReference).toList(growable: false);
+          final kokoro =
+              list.where((v) => v.isKokoro).toList(growable: false);
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.voice_chat_rounded, color: AppColors.accent),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Speaking voice',
+                      style: TextStyle(
+                        color: context.text,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: loading
+                        ? null
+                        : () => unawaited(_voice.refreshVoices()),
+                    icon: loading
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Refresh'),
+                  ),
+                ],
+              ),
+              Text(
+                'Engine: $backend',
+                style: TextStyle(fontSize: 12, color: context.textD),
+              ),
+              if (_voice.envOverridesVoice) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Locked by VOICE_TTS_VOICE=${_voice.resolvedTtsVoice}',
+                  style: TextStyle(fontSize: 12, color: AppColors.orange),
+                ),
+              ],
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: (_importing || _voice.envOverridesVoice)
+                      ? null
+                      : _pickAndImport,
+                  icon: _importing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.add_rounded, size: 18),
+                  label: Text(
+                    _importing ? 'Importing…' : 'Add voice (WAV)',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: context.text,
+                    side: BorderSide(color: context.border),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              if (list.isEmpty && !loading)
+                Text(
+                  'No voices yet — start the voice sidecar or add a WAV.',
+                  style: TextStyle(fontSize: 12, color: context.textM),
+                ),
+              if (refs.isNotEmpty) ...[
+                Text(
+                  'Custom clones (Chatterbox)',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: context.textM,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                ...refs.map((v) => _voiceTile(context, v, selected)),
+                const SizedBox(height: 10),
+              ],
+              if (kokoro.isNotEmpty) ...[
+                Text(
+                  'Built-in presets (Kokoro)',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: context.textM,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                SizedBox(
+                  height: 220,
+                  child: ListView.builder(
+                    itemCount: kokoro.length,
+                    itemBuilder: (context, i) =>
+                        _voiceTile(context, kokoro[i], selected),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 6),
+              Text(
+                'Tip: for a custom voice, add a WAV then keep Chatterbox as the engine. '
+                'Kokoro presets need the Kokoro engine.',
+                style: TextStyle(fontSize: 11, color: context.textD),
+              ),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _voiceTile(BuildContext context, VoiceOption v, String selected) {
+    final isSel = selected == v.id;
+    final locked = _voice.envOverridesVoice;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Material(
+        color: isSel
+            ? AppColors.accent.withValues(alpha: 0.12)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: locked ? null : () => unawaited(_select(v)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                Icon(
+                  isSel
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  size: 18,
+                  color: isSel ? AppColors.accent : context.textM,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        v.label,
+                        style: TextStyle(
+                          color: context.text,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        v.isReference
+                            ? 'Clone WAV · ${v.id}'
+                            : 'Preset · ${v.id}',
+                        style: TextStyle(
+                          color: context.textD,
+                          fontSize: 11,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                if (v.isReference)
+                  IconButton(
+                    tooltip: 'Remove voice',
+                    onPressed: locked
+                        ? null
+                        : () => unawaited(_confirmDelete(v)),
+                    icon: Icon(
+                      Icons.delete_outline_rounded,
+                      size: 20,
+                      color: context.textM,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );

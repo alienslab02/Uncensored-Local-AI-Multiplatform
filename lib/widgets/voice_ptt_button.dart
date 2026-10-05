@@ -6,7 +6,7 @@ import '../services/voice_recorder_service.dart';
 import '../services/voice_runtime_service.dart';
 import '../theme/app_colors.dart';
 
-/// Tap once to listen, tap again to send.
+/// Hold to talk (same as Right ⌥ keyboard PTT).
 class VoicePttButton extends StatelessWidget {
   const VoicePttButton({super.key});
 
@@ -24,6 +24,7 @@ class VoicePttButton extends StatelessWidget {
       final errored = phase == VoiceChatPhase.error;
       final processing = voice.isProcessing && !listening && !starting;
       final hearing = listening && recorder.amplitudeDb.value > -45;
+      final armed = !starting && !processing;
 
       final Color bg;
       final Color fg;
@@ -31,7 +32,7 @@ class VoicePttButton extends StatelessWidget {
       if (listening) {
         bg = hearing ? AppColors.red : AppColors.red.withValues(alpha: 0.75);
         fg = Colors.white;
-        icon = Icons.stop_rounded;
+        icon = Icons.mic_rounded;
       } else if (errored) {
         bg = AppColors.red.withValues(alpha: 0.2);
         fg = AppColors.red;
@@ -48,27 +49,21 @@ class VoicePttButton extends StatelessWidget {
 
       return Tooltip(
         message: listening
-            ? (voice.canSend.value ? 'Tap to send' : 'Keep speaking…')
-            : voice.statusText.value,
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: (starting || processing)
-              ? null
-              : () async {
-                  await voice.onMicTapped();
-                  if (voice.phase.value == VoiceChatPhase.error &&
-                      voice.lastError.value.isNotEmpty) {
-                    // Mic-denied path already shows a snackbar + opens Settings.
-                    if (!voice.lastError.value.contains('Microphone permission')) {
-                      Get.snackbar(
-                        'Voice',
-                        voice.lastError.value,
-                        snackPosition: SnackPosition.BOTTOM,
-                        duration: const Duration(seconds: 6),
-                      );
-                    }
-                  }
-                },
+            ? 'Release to send'
+            : 'Hold ${VoiceChatController.pttKeyLabel} or mic to talk',
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: armed
+              ? (_) {
+                  voice.onPttPress();
+                }
+              : null,
+          onPointerUp: (_) {
+            voice.onPttRelease();
+          },
+          onPointerCancel: (_) {
+            voice.onPttRelease();
+          },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             width: 36,

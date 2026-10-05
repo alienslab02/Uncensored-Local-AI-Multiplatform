@@ -123,14 +123,8 @@ class ChatController extends GetxController {
         aiMsg.content = '⚠ Error: ${e.toString()}';
       }
     } finally {
-      // Clean up any trailing stop tokens or whitespace
-      aiMsg.content = aiMsg.content
-          .replaceAll(RegExp(
-            r'<\|end\|>|<\|eot_id\|>|<\|endoftext\|>|<\|im_end\|>|<\|im_start\|>'
-            r'|<end_of_turn>|<start_of_turn>|<\|assistant\|>|<\|user\|>|<\|system\|>'
-            r'|<\|pad\|>|</s>|<s>|\[INST\]|\[/INST\]|\[end\]'
-          ), '')
-          .trim();
+      // Drop leaked chat-template / stop tokens (keeps [emotion] tags)
+      aiMsg.content = LlmService.stripControlTokens(aiMsg.content);
       isGenerating.value = false;
       streamedResponse.value = '';
       chat.updatedAt = DateTime.now();

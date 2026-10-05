@@ -6,8 +6,39 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
+import 'app_paths.dart';
 import 'chat_storage_service.dart';
 import 'log_service.dart';
+
+/// One entry from `GET /voices`.
+class VoiceOption {
+  final String id;
+  final String label;
+  final String kind; // kokoro | reference
+  final String? path;
+  final String? backend;
+
+  const VoiceOption({
+    required this.id,
+    required this.label,
+    required this.kind,
+    this.path,
+    this.backend,
+  });
+
+  factory VoiceOption.fromJson(Map<String, dynamic> json) {
+    return VoiceOption(
+      id: '${json['id'] ?? ''}',
+      label: '${json['label'] ?? json['id'] ?? 'Voice'}',
+      kind: '${json['kind'] ?? ''}',
+      path: json['path'] as String?,
+      backend: json['backend'] as String?,
+    );
+  }
+
+  bool get isReference => kind == 'reference';
+  bool get isKokoro => kind == 'kokoro';
+}
 
 /// Client + auto-launcher for Mode V host voice runtime (`:8765`).
 ///
@@ -22,28 +53,29 @@ import 'log_service.dart';
 class VoiceRuntimeService extends GetxService {
   static const defaultBaseUrl = 'http://127.0.0.1:8765';
   static const defaultTtsBackend = 'chatterbox_nano';
+  static const defaultTtsVoice = 'kokoro:af_heart';
 
   /// Selectable engines shown in Settings (must match `voice_runtime/tts`).
   static const ttsBackendOptions = <({String id, String label, String blurb})>[
     (
       id: 'chatterbox_nano',
       label: 'Chatterbox Nano',
-      blurb: 'Expressive tags ([chuckle], …). Trial default.',
+      blurb: 'Expressive tags ([chuckle], …). Trial default. Uses clone WAVs.',
     ),
     (
       id: 'chatterbox_turbo',
       label: 'Chatterbox Turbo',
-      blurb: 'Larger expressive English model.',
+      blurb: 'Larger expressive English model. Uses clone WAVs.',
     ),
     (
       id: 'chatterbox_mtl_v3',
       label: 'Chatterbox Multilingual',
-      blurb: 'Many languages; pass language_id on speak.',
+      blurb: 'Many languages; uses clone WAVs + language_id.',
     ),
     (
       id: 'kokoro',
       label: 'Kokoro (fallback)',
-      blurb: 'Fast ONNX stack. Use if Chatterbox is slow.',
+      blurb: 'Fast ONNX presets (Heart, Adam, …).',
     ),
   ];
 
@@ -55,6 +87,9 @@ class VoiceRuntimeService extends GetxService {
   final activeBackend = ''.obs;
   final requestedBackend = ''.obs;
   final fallbackUsed = false.obs;
+  final voices = <VoiceOption>[].obs;
+  final selectedVoiceId = ''.obs;
+  final voicesLoading = false.obs;
 
   LogService get _log {
     try {
@@ -76,12 +111,30 @@ class VoiceRuntimeService extends GetxService {
   bool get envOverridesBackend =>
       (Platform.environment['VOICE_TTS_BACKEND'] ?? '').trim().isNotEmpty;
 
+  bool get envOverridesVoice =>
+      (Platform.environment['VOICE_TTS_VOICE'] ?? '').trim().isNotEmpty;
+
   String get resolvedTtsBackend {
     final fromEnv = (Platform.environment['VOICE_TTS_BACKEND'] ?? '').trim();
     if (fromEnv.isNotEmpty) return fromEnv;
     final stored = (_storage?.voiceTtsBackend ?? '').trim();
     if (stored.isNotEmpty) return stored;
     return defaultTtsBackend;
+  }
+
+  String get resolvedTtsVoice {
+    final fromEnv = (Platform.environment['VOICE_TTS_VOICE'] ?? '').trim();
+    if (fromEnv.isNotEmpty) return fromEnv;
+    final stored = (_storage?.voiceTtsVoice ?? '').trim();
+    if (stored.isNotEmpty) return stored;
+    // Chatterbox → prefer first reference if we already fetched catalog
+    final backend = resolvedTtsBackend;
+    if (backend.startsWith('chatterbox')) {
+      for (final v in voices) {
+        if (v.isReference) return v.id;
+      }
+    }
+    return defaultTtsVoice;
   }
 
   Future<Map<String, dynamic>?> fetchHealth({
@@ -125,7 +178,198 @@ class VoiceRuntimeService extends GetxService {
       _storage?.voiceTtsBackend = id;
     }
     requestedBackend.value = id;
-    return ensureRunning(forceRestart: true);
+    final ok = await ensureRunning(forceRestart: true);
+    if (ok) await refreshVoices();
+    return ok;
+  }
+
+  /// Persist selected catalog voice id (applied on next `/speak`).
+  Future<void> applyTtsVoice(String voiceId) async {
+    final id = voiceId.trim();
+    if (id.isEmpty) return;
+    if (!envOverridesVoice) {
+      _storage?.voiceTtsVoice = id;
+    }
+    selectedVoiceId.value = id;
+  }
+
+  Future<List<VoiceOption>> refreshVoices() async {
+    voicesLoading.value = true;
+    try {
+      if (!await ping()) {
+        await ensureRunning();
+      }
+      final res = await http
+          .get(Uri.parse('$baseUrl/voices'))
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode != 200) {
+        lastError.value = 'voices ${res.statusCode}: ${res.body}';
+        return voices.toList();
+      }
+      final json = jsonDecode(res.body) as Map<String, dynamic>;
+      final list = (json['voices'] as List? ?? const [])
+          .whereType<Map>()
+          .map((e) => VoiceOption.fromJson(Map<String, dynamic>.from(e)))
+          .where((v) => v.id.isNotEmpty)
+          .toList();
+      voices.assignAll(list);
+
+      var selected = resolvedTtsVoice;
+      final ids = list.map((v) => v.id).toSet();
+      if (selected.isEmpty || !ids.contains(selected)) {
+        final def = '${json['default_id'] ?? ''}';
+        selected = ids.contains(def)
+            ? def
+            : (list.isNotEmpty ? list.first.id : defaultTtsVoice);
+        if (!envOverridesVoice && selected.isNotEmpty) {
+          _storage?.voiceTtsVoice = selected;
+        }
+      }
+      selectedVoiceId.value = selected;
+      return list;
+    } catch (e) {
+      lastError.value = 'voices failed: $e';
+      return voices.toList();
+    } finally {
+      voicesLoading.value = false;
+    }
+  }
+
+  /// Remove a custom clone (`ref:…`). Kokoro presets cannot be deleted.
+  Future<bool> deleteReferenceVoice(String voiceId) async {
+    final id = voiceId.trim();
+    if (!id.startsWith('ref:')) {
+      lastError.value = 'Only custom clone voices can be removed';
+      return false;
+    }
+
+    var deleted = false;
+    if (await ping()) {
+      try {
+        final uri = Uri.parse('$baseUrl/voices').replace(
+          queryParameters: {'id': id},
+        );
+        final res = await http
+            .delete(uri)
+            .timeout(const Duration(seconds: 15));
+        if (res.statusCode == 200) {
+          deleted = true;
+        } else {
+          lastError.value = 'delete ${res.statusCode}: ${res.body}';
+        }
+      } catch (e) {
+        lastError.value = 'delete failed: $e';
+      }
+    }
+
+    // Local fallback: delete file under AppPaths if API unavailable
+    if (!deleted) {
+      VoiceOption? match;
+      for (final v in voices) {
+        if (v.id == id) {
+          match = v;
+          break;
+        }
+      }
+      final path = match?.path;
+      if (path != null && path.isNotEmpty) {
+        try {
+          final f = File(path);
+          if (f.existsSync()) {
+            await f.delete();
+            deleted = true;
+          }
+        } catch (e) {
+          lastError.value = 'delete failed: $e';
+        }
+      }
+    }
+
+    if (!deleted) return false;
+
+    if (selectedVoiceId.value == id ||
+        (_storage?.voiceTtsVoice ?? '') == id) {
+      selectedVoiceId.value = '';
+      if (!envOverridesVoice) {
+        _storage?.voiceTtsVoice = '';
+      }
+    }
+    await refreshVoices();
+    return true;
+  }
+
+  /// Copy a local WAV into the user voice library and select it.
+  Future<VoiceOption?> importReferenceWav(String sourcePath) async {
+    final src = File(sourcePath);
+    if (!src.existsSync()) {
+      lastError.value = 'File not found';
+      return null;
+    }
+    final bytes = await src.readAsBytes();
+    if (bytes.length < 1000) {
+      lastError.value = 'WAV too small — use a clear sample (>5s for cloning)';
+      return null;
+    }
+
+    // Prefer runtime upload so catalog stays authoritative
+    if (await ping()) {
+      try {
+        final uri = Uri.parse('$baseUrl/voices');
+        final req = http.MultipartRequest('POST', uri)
+          ..files.add(
+            http.MultipartFile.fromBytes(
+              'audio',
+              bytes,
+              filename: p.basename(sourcePath),
+            ),
+          );
+        final streamed =
+            await req.send().timeout(const Duration(seconds: 30));
+        final body = await streamed.stream.bytesToString();
+        if (streamed.statusCode == 200) {
+          final json = jsonDecode(body) as Map<String, dynamic>;
+          final voiceJson = json['voice'];
+          if (voiceJson is Map) {
+            final opt =
+                VoiceOption.fromJson(Map<String, dynamic>.from(voiceJson));
+            await refreshVoices();
+            await applyTtsVoice(opt.id);
+            return opt;
+          }
+        }
+      } catch (e) {
+        _log.error('voice upload failed: $e', source: 'VoiceRuntime');
+      }
+    }
+
+    // Local fallback into AppPaths
+    try {
+      await AppPaths.ensureInitialized();
+      final dir = Directory(AppPaths.voiceReferencesDir);
+      await dir.create(recursive: true);
+      var stem = p.basenameWithoutExtension(sourcePath);
+      stem = stem.replaceAll(RegExp(r'[^A-Za-z0-9_\-]+'), '_');
+      var dest = File(p.join(dir.path, '$stem.wav'));
+      var n = 1;
+      while (dest.existsSync()) {
+        dest = File(p.join(dir.path, '${stem}_$n.wav'));
+        n++;
+      }
+      await dest.writeAsBytes(bytes);
+      await refreshVoices();
+      final id = 'ref:${p.basenameWithoutExtension(dest.path).toLowerCase()}';
+      await applyTtsVoice(id);
+      return VoiceOption(
+        id: id,
+        label: p.basenameWithoutExtension(dest.path),
+        kind: 'reference',
+        path: dest.path,
+        backend: 'chatterbox',
+      );
+    } catch (e) {
+      lastError.value = 'Import failed: $e';
+      return null;
+    }
   }
 
   /// Ensure STT/TTS sidecar is healthy. Safe to call on every mic press.
@@ -195,6 +439,25 @@ class VoiceRuntimeService extends GetxService {
         source: 'VoiceRuntime',
       );
 
+      String? refsDir;
+      try {
+        await AppPaths.ensureInitialized();
+        refsDir = AppPaths.voiceReferencesDir;
+        await Directory(refsDir).create(recursive: true);
+      } catch (_) {}
+
+      final voiceId = resolvedTtsVoice;
+      String? refPath;
+      for (final v in voices) {
+        if (v.id == voiceId && v.isReference) {
+          refPath = v.path;
+          break;
+        }
+      }
+      final preset = voiceId.startsWith('kokoro:')
+          ? voiceId.substring('kokoro:'.length)
+          : (Platform.environment['VOICE_PRESET'] ?? 'af_heart');
+
       final result = await Process.run(
         '/bin/bash',
         [ensure.path],
@@ -212,6 +475,11 @@ class VoiceRuntimeService extends GetxService {
           'VOICE_RUNTIME_HOST': '127.0.0.1',
           'VOICE_RUNTIME_PORT': '8765',
           'VOICE_TTS_BACKEND': desired,
+          'VOICE_TTS_VOICE': voiceId,
+          'VOICE_PRESET': preset,
+          'VOICE_REFERENCES_DIR': ?refsDir,
+          if (refPath != null && refPath.isNotEmpty)
+            'VOICE_TTS_REFERENCE': refPath,
           if (forceRestart) 'VOICE_TTS_FORCE_RESTART': '1',
         },
       );
@@ -291,16 +559,20 @@ class VoiceRuntimeService extends GetxService {
     return (json['text'] as String? ?? '').trim();
   }
 
-  Future<List<int>> speak(String text, {String voice = 'af_heart'}) async {
+  Future<List<int>> speak(String text, {String? voice}) async {
     if (!await ping()) {
       final ok = await ensureRunning();
       if (!ok) throw StateError(lastError.value);
     }
+    final voiceId = (voice ?? resolvedTtsVoice).trim();
     final res = await http
         .post(
           Uri.parse('$baseUrl/speak'),
           headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'text': text, 'voice': voice}),
+          body: jsonEncode({
+            'text': text,
+            if (voiceId.isNotEmpty) 'voice': voiceId,
+          }),
         )
         .timeout(const Duration(seconds: 90));
     if (res.statusCode != 200) {
