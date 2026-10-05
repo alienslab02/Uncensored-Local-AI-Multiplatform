@@ -102,11 +102,21 @@ flutter build ios --release
 
 > Desktop builds compile successfully but may have rough edges. **We are actively looking for contributors** to help test and polish the desktop experience.
 
+**macOS Mode V (voice + chat):**
+
 ```bash
 git clone https://github.com/techjarves/Uncensored-Local-AI-Multiplatform.git
 cd Uncensored-Local-AI-Multiplatform
+flutter run -d macos
+# or: ./scripts/dev_mac.sh
+```
+
+On splash the app **auto-loads** a downloaded GGUF (if any), starts Local API (`:4891`), and **warm-starts** the voice sidecar (`:8765`). Tap the mic to talk. You can still run voice alone (`cd voice_runtime && ./scripts/ensure_running.sh`). Switch TTS in **Settings → Voice TTS** or `voice_runtime/.env`.
+
+```bash
+# Other desktop (text chat)
 flutter pub get
-flutter run -d windows   # or macos / linux
+flutter run -d windows   # or linux / macos
 ```
 
 If you encounter issues on desktop, please [open an issue](https://github.com/techjarves/Uncensored-Local-AI-Multiplatform/issues) — your feedback directly shapes the roadmap.
@@ -157,6 +167,8 @@ curl -N http://127.0.0.1:4891/v1/chat/completions \
 
 ## Roadmap
 
+Full detail: **[ROADMAP.md](ROADMAP.md)** (data paths, Mode V voice scope, platform matrix).
+
 | Feature | Status |
 |---------|--------|
 | On-device uncensored AI chat | **Launched** |
@@ -166,9 +178,11 @@ curl -N http://127.0.0.1:4891/v1/chat/completions \
 | Local OpenAI-compatible API server | **Launched** |
 | Custom model import (URL + file) | **Launched** |
 | Multi-platform support | **Launched** |
-| AI Agent Mode | In Progress |
+| Local data under `~/.uncensored-ai` (desktop) / app support (mobile) | **Launched** |
+| Voice chat Mode V (macOS: Whisper + Kokoro) | **In progress** |
+| Voice on Windows / Linux / mobile | Planned |
+| AI Agent Mode | Planned |
 | Web search integration | Planned |
-| Voice interaction | Planned |
 | Image/vision model support | Planned |
 
 ---

@@ -9,6 +9,9 @@ import '../services/llm_service.dart';
 import '../widgets/chat_sidebar.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_indicator.dart';
+import '../widgets/voice_ptt_button.dart';
+import '../widgets/voice_status_bar.dart';
+import '../controllers/voice_chat_controller.dart';
 import 'model_library_screen.dart';
 import 'settings_screen.dart';
 
@@ -988,6 +991,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }),
         ),
 
+        const VoiceStatusBar(),
         _buildInputArea(),
       ],
     );
@@ -1057,6 +1061,12 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            // Push-to-talk (Mode V)
+            Padding(
+              padding: const EdgeInsets.only(left: 8, bottom: 4),
+              child: VoicePttButton(),
+            ),
+
             // Text field
             Expanded(
               child: TextField(
@@ -1075,7 +1085,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
                   focusedBorder: InputBorder.none,
-                  contentPadding: const EdgeInsets.fromLTRB(24, 14, 8, 14),
+                  contentPadding: const EdgeInsets.fromLTRB(12, 14, 8, 14),
                 ),
                 onSubmitted: (_) => _send(),
               ),
@@ -1089,15 +1099,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     ? _circleButton(
                         icon: Icons.stop_rounded,
                         color: AppColors.red,
-                        onTap: _chatCtrl.stopGeneration,
+                        onTap: () {
+                          Get.find<VoiceChatController>().cancel();
+                          _chatCtrl.stopGeneration();
+                        },
                         tooltip: 'Stop',
                       )
                     : _circleButton(
                         icon: Icons.arrow_upward_rounded,
                         color: AppColors.accent,
                         onTap: _send,
-                        tooltip: 'Send',
-                      ),
+                        tooltip: 'Send',                      ),
               ),
             ),
           ],

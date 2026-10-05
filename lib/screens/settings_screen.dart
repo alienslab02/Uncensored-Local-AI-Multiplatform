@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -10,6 +12,7 @@ import '../services/local_api_server_service.dart';
 import '../services/model_manager.dart';
 import '../services/background_optimizer_service.dart';
 import '../services/chat_storage_service.dart';
+import '../services/voice_runtime_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   /// When true, no Scaffold — just the body content for embedding in tabs.
@@ -283,6 +286,19 @@ class _SettingsBody extends StatelessWidget {
               _HardwareSettingsCard(storage: storage),
 
               const SizedBox(height: 28),
+
+              // ── Voice TTS ─────────────────────────────────
+              if (Platform.isMacOS) ...[
+                _sectionHeader(context, 'Voice TTS'),
+                const SizedBox(height: 8),
+                Text(
+                  'Choose the local speech engine. Changes restart the voice sidecar.',
+                  style: TextStyle(fontSize: 12, color: context.textD),
+                ),
+                const SizedBox(height: 12),
+                _VoiceTtsSettingsCard(storage: storage),
+                const SizedBox(height: 28),
+              ],
 
               // ── Local API Server ──────────────────────────
               _sectionHeader(context, 'Local API Server'),
@@ -751,6 +767,191 @@ class _SettingsBody extends StatelessWidget {
           color: color,
           fontSize: 12,
           fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _VoiceTtsSettingsCard extends StatefulWidget {
+  final ChatStorageService storage;
+
+  const _VoiceTtsSettingsCard({required this.storage});
+
+  @override
+  State<_VoiceTtsSettingsCard> createState() => _VoiceTtsSettingsCardState();
+}
+
+class _VoiceTtsSettingsCardState extends State<_VoiceTtsSettingsCard> {
+  late String _selected;
+  bool _applying = false;
+
+  VoiceRuntimeService get _voice => Get.find<VoiceRuntimeService>();
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = _voice.resolvedTtsBackend;
+    unawaited(_voice.ping());
+  }
+
+  Future<void> _apply(String id) async {
+    if (_applying || envLocked) return;
+    setState(() {
+      _selected = id;
+      _applying = true;
+    });
+    final ok = await _voice.applyTtsBackend(id);
+    if (!mounted) return;
+    setState(() => _applying = false);
+    Get.snackbar(
+      ok ? 'Voice TTS' : 'Voice TTS Error',
+      ok
+          ? (_voice.fallbackUsed.value
+              ? 'Active: ${_voice.activeBackend.value} (fallback)'
+              : 'Active: ${_voice.activeBackend.value}')
+          : _voice.lastError.value,
+      snackPosition: SnackPosition.BOTTOM,
+    );
+  }
+
+  bool get envLocked => _voice.envOverridesBackend;
+
+  @override
+  Widget build(BuildContext context) {
+    final options = VoiceRuntimeService.ttsBackendOptions;
+    final envLocked = _voice.envOverridesBackend;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: context.bgPanel,
+        border: Border.all(color: context.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.record_voice_over_rounded, color: AppColors.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Speech engine',
+                    style: TextStyle(
+                      color: context.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Obx(() {
+                  final active = _voice.activeBackend.value;
+                  if (active.isEmpty) {
+                    return Text(
+                      'Not running',
+                      style: TextStyle(color: context.textD, fontSize: 12),
+                    );
+                  }
+                  return Text(
+                    _voice.fallbackUsed.value ? '$active (fallback)' : active,
+                    style: TextStyle(
+                      color: AppColors.green,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  );
+                }),
+              ],
+            ),
+            if (envLocked) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Locked by shell env VOICE_TTS_BACKEND=${_voice.resolvedTtsBackend}. '
+                'Unset it to change from Settings.',
+                style: TextStyle(fontSize: 12, color: AppColors.orange),
+              ),
+            ],
+            const SizedBox(height: 12),
+            ...options.map((opt) {
+              final selected = _selected == opt.id;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Material(
+                  color: selected
+                      ? AppColors.accent.withValues(alpha: 0.12)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: (_applying || envLocked)
+                        ? null
+                        : () => _apply(opt.id),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            selected
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_off,
+                            size: 20,
+                            color: selected
+                                ? AppColors.accent
+                                : context.textM,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  opt.label,
+                                  style: TextStyle(
+                                    color: context.text,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  opt.blurb,
+                                  style: TextStyle(
+                                    color: context.textD,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }),
+            if (_applying) ...[
+              const SizedBox(height: 8),
+              Obx(
+                () => Text(
+                  _voice.statusMessage.value.isEmpty
+                      ? 'Switching engine…'
+                      : _voice.statusMessage.value,
+                  style: TextStyle(fontSize: 12, color: context.textM),
+                ),
+              ),
+            ],
+            const SizedBox(height: 4),
+            Text(
+              'CLI: export VOICE_TTS_BACKEND=kokoro|chatterbox_nano|…',
+              style: TextStyle(fontSize: 11, color: context.textD),
+            ),
+          ],
         ),
       ),
     );

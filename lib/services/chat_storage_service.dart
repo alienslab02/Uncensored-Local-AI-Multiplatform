@@ -107,4 +107,20 @@ class ChatStorageService extends GetxService {
       _settingsBox.get('backend_type', defaultValue: 'cpu') as String;
 
   set backendType(String value) => _settingsBox.put('backend_type', value);
+
+  /// Absolute path to repo `voice_runtime/` (auto-discovered on mic press).
+  String get voiceRuntimePath =>
+      _settingsBox.get('voice_runtime_path', defaultValue: '') as String;
+
+  set voiceRuntimePath(String value) =>
+      _settingsBox.put('voice_runtime_path', value);
+
+  /// TTS plugin id for Mode V (`kokoro`, `chatterbox_nano`, …).
+  /// Overridden at runtime if process env `VOICE_TTS_BACKEND` is set.
+  String get voiceTtsBackend =>
+      _settingsBox.get('voice_tts_backend', defaultValue: 'chatterbox_nano')
+          as String;
+
+  set voiceTtsBackend(String value) =>
+      _settingsBox.put('voice_tts_backend', value);
 }

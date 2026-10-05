@@ -5,11 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:hive/hive.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/ai_model_info.dart';
 import '../models/download_state.dart';
+import 'app_paths.dart';
 import 'wakelock_service.dart';
 
 /// Manages model catalog, downloads, and local file discovery.
@@ -31,9 +31,9 @@ class ModelManager extends GetxService {
     return this;
   }
 
-  /// Resolve models directory.
+  /// Resolve models directory (`~/.uncensored-ai/models`, or USB Shared/models).
   Future<String> _getModelsDir() async {
-    // Only check USB path on desktop platforms
+    // Portable USB layout still wins when present next to the binary.
     if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
       try {
         final execDir = Platform.resolvedExecutable;
@@ -46,9 +46,8 @@ class ModelManager extends GetxService {
       }
     }
 
-    // Fall back to app documents
-    final appDir = await getApplicationDocumentsDirectory();
-    final modelsDir = p.join(appDir.path, 'PortableAI', 'models');
+    await AppPaths.ensureInitialized();
+    final modelsDir = AppPaths.modelsDir;
     await Directory(modelsDir).create(recursive: true);
     return modelsDir;
   }

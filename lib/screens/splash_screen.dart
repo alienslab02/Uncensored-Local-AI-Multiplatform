@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:path/path.dart' as p;
 
 import '../theme/app_colors.dart';
 import '../services/llm_service.dart';
@@ -10,6 +13,7 @@ import '../services/local_api_server_service.dart';
 import '../services/wakelock_service.dart';
 import '../services/log_service.dart';
 import '../services/background_optimizer_service.dart';
+import '../services/voice_runtime_service.dart';
 import '../routes/app_routes.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -43,15 +47,32 @@ class _SplashScreenState extends State<SplashScreen> {
 
       setState(() => _status = 'Preparing AI engine...');
       log.info('Preparing AI engine...', source: 'Splash');
-      await Get.find<LlmService>().init();
+      final llm = Get.find<LlmService>();
+      await llm.init();
+
+      // Desktop/voice: auto-load last or first available GGUF so Local API is usable
+      final storage = Get.find<ChatStorageService>();
+      final manager = Get.find<ModelManager>();
+      await _autoLoadModelIfPresent(llm, manager, storage, log);
 
       setState(() => _status = 'Preparing local API...');
       log.info('Preparing local API...', source: 'Splash');
-      await Get.find<LocalApiServerService>().init();
+      // Keep API on for OpenAI clients / local tools
+      storage.localApiServerEnabled = true;
+      final api = Get.find<LocalApiServerService>();
+      await api.init();
+      if (!api.isRunning.value) {
+        await api.start();
+      }
 
       setState(() => _status = 'Setting up background services...');
       log.info('Setting up background services...', source: 'Splash');
       await Get.find<WakelockService>().init();
+
+      // macOS Mode V: warm-start voice sidecar so mic works without a separate terminal
+      if (Platform.isMacOS) {
+        await _warmStartVoice(log);
+      }
 
       setState(() => _status = 'Ready!');
       log.info('All services initialized successfully', source: 'Splash');
@@ -68,6 +89,63 @@ class _SplashScreenState extends State<SplashScreen> {
       try {
         Get.find<LogService>().error('Init failed: $e', source: 'Splash');
       } catch (_) {}
+    }
+  }
+
+  /// Start host voice_runtime (:8765). Failures are non-fatal — mic can retry.
+  Future<void> _warmStartVoice(LogService log) async {
+    try {
+      setState(() => _status = 'Starting voice runtime…');
+      log.info('Warm-starting voice runtime…', source: 'Splash');
+      final voice = Get.find<VoiceRuntimeService>();
+      final ok = await voice.ensureRunning();
+      if (ok) {
+        log.info(
+          'Voice ready (${voice.activeBackend.value}'
+          '${voice.fallbackUsed.value ? ', fallback' : ''})',
+          source: 'Splash',
+        );
+      } else {
+        log.error(
+          'Voice warm-start skipped: ${voice.lastError.value}',
+          source: 'Splash',
+        );
+      }
+    } catch (e) {
+      log.error('Voice warm-start failed: $e', source: 'Splash');
+    }
+  }
+
+  Future<void> _autoLoadModelIfPresent(
+    LlmService llm,
+    ModelManager manager,
+    ChatStorageService storage,
+    LogService log,
+  ) async {
+    try {
+      const preferred = 'gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M.gguf';
+      String? filename;
+      if (manager.downloadedModels.contains(preferred)) {
+        filename = preferred;
+      } else if (storage.lastModelId.isNotEmpty &&
+          manager.downloadedModels.contains(storage.lastModelId)) {
+        filename = storage.lastModelId;
+      } else if (manager.downloadedModels.isNotEmpty) {
+        filename = manager.downloadedModels.first;
+      }
+      if (filename == null || filename.isEmpty) return;
+      final modelFile = filename;
+
+      final path = manager.getModelPathByFilename(modelFile);
+      if (!await File(path).exists()) return;
+
+      setState(() => _status = 'Loading ${p.basename(modelFile)}...');
+      log.info('Auto-loading model: $modelFile', source: 'Splash');
+      await llm.loadModel(path);
+      storage.lastModelId = modelFile;
+      log.info('Model loaded for Local API', source: 'Splash');
+    } catch (e) {
+      log.error('Auto-load model skipped: $e', source: 'Splash');
     }
   }
 

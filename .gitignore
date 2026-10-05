@@ -1,9 +1,8 @@
-```
 # Dependencies
 .pub/
 .buildlog
 .flutter-plugins
-.flutter-plugin-dependencies
+.flutter-plugins-dependencies
 .packages
 
 # Build outputs
@@ -14,11 +13,38 @@ build/
 .env
 .env.local
 *.env.*
+!.env.example
 
-# Logs
+# Logs / Python caches
 *.log
+**/__pycache__/
+*.py[cod]
+*.ses
 
 # OS generated files
 .DS_Store
 Thumbs.db
-```
+
+# App data lives under ~/.uncensored-ai (desktop) or app support (mobile) — never commit
+# Mode V voice runtime — venv, weights, pilot audio
+voice_runtime/.venv/
+voice_runtime/data/**
+!voice_runtime/data/**/
+!voice_runtime/data/**/.gitkeep
+voice_runtime/pilot/out/**
+!voice_runtime/pilot/out/.gitkeep
+
+# Model / audio binaries (never commit weights)
+**/*.gguf
+**/*.gguf.part
+**/*.wav
+**/*.wav.done
+**/*.wav.failed
+**/*.m4a
+**/*.safetensors
+**/*.onnx
+**/*.pt
+**/*.pth
+**/*.ggml
+**/*.bin
+!assets/**/*.bin

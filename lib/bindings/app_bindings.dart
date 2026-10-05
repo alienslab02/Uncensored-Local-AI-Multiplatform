@@ -6,9 +6,13 @@ import '../services/chat_storage_service.dart';
 import '../services/local_api_server_service.dart';
 import '../services/wakelock_service.dart';
 import '../services/log_service.dart';
+import '../services/voice_runtime_service.dart';
+import '../services/voice_playback_service.dart';
+import '../services/voice_recorder_service.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/model_controller.dart';
 import '../controllers/theme_controller.dart';
+import '../controllers/voice_chat_controller.dart';
 
 /// Initial bindings — registers all services and controllers with GetX DI.
 class AppBindings extends Bindings {
@@ -21,6 +25,9 @@ class AppBindings extends Bindings {
     Get.lazyPut(() => LocalApiServerService(), fenix: true);
     Get.lazyPut(() => WakelockService(), fenix: true);
     Get.lazyPut(() => LogService(), fenix: true);
+    Get.lazyPut(() => VoiceRuntimeService(), fenix: true);
+    Get.lazyPut(() => VoicePlaybackService(), fenix: true);
+    Get.lazyPut(() => VoiceRecorderService(), fenix: true);
 
     // ── Controllers ──────────────────────────────────────────────
     Get.put(
@@ -28,5 +35,6 @@ class AppBindings extends Bindings {
     ); // Put instead of lazyPut since we need theme immediately
     Get.lazyPut(() => ChatController(), fenix: true);
     Get.lazyPut(() => ModelController(), fenix: true);
+    Get.lazyPut(() => VoiceChatController(), fenix: true);
   }
 }

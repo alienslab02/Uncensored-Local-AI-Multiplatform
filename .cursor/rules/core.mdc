@@ -1,0 +1,13 @@
+---
+description: Core project rules — local-first, Mode V voice, no secrets
+alwaysApply: true
+---
+
+# Core project rules
+
+- Read root `AGENTS.md`, `RULES.md`, and `ARCHITECTURE.md` before large changes.
+- Local-first GGUF chat; do not require cloud LLM for text.
+- Voice is Mode V: host `voice_runtime` (Whisper + Kokoro) + Flutter PTT — no Gemini Live / Fish Docker.
+- No secrets, `.gguf`, or voice weights in git.
+- Smallest diff; match GetX + Hive patterns; no second state framework.
+- Voice BE work belongs in `voice_runtime/` (Mode V, macOS-first — see ROADMAP.md).

@@ -21,10 +21,10 @@ dependencies:
   hive: ^2.2.3                     # Hive core key-value + box storage
 
   # ── Networking / Downloads ──────────────────────────────────────
-  http: ^1.2.2                     # HTTP requests + model downloading
+  http: ^1.6.0                     # HTTP requests + model downloading
 
   # ── File System ─────────────────────────────────────────────────
-  path_provider: ^2.1.5            # App documents / downloads dir
+  path_provider: ^2.1.6            # App documents / downloads dir
   path: ^1.9.1                     # Path string utilities
   file_picker: ^8.1.7              # Cross-platform file/folder picker
 
@@ -39,6 +39,8 @@ dependencies:
   wakelock_plus: ^1.2.10             # Keep screen on during downloads
   flutter_foreground_task: ^9.2.2    # Foreground service for downloads/inference
   disable_battery_optimization: ^1.1.1 # Guide users to disable battery optimization
+  record: ^7.1.1
+  just_audio: ^0.10.6
 
 dev_dependencies:
   flutter_test:

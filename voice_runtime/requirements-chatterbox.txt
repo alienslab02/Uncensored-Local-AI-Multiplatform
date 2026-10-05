@@ -1,0 +1,6 @@
+# Expressive TTS (Nano / Turbo / Multilingual V3) — MIT, local weights
+# Install into voice_runtime .venv after requirements.txt:
+#   uv pip install -r requirements-chatterbox.txt
+#
+# Pin to git: PyPI 0.1.7 lacks nano=True / t3_model="v3" loaders.
+chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git

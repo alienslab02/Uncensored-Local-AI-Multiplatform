@@ -1,0 +1,14 @@
+---
+description: Dart/Flutter lib conventions (GetX, services, screens)
+globs: lib/**/*.dart
+alwaysApply: false
+---
+
+# Dart / Flutter conventions
+
+- Follow the `AGENTS.md` in the subfolder you edit (`lib/services`, `controllers`, etc.).
+- Register new GetX services/controllers in `lib/bindings/app_bindings.dart`.
+- Services: no widgets. Controllers: orchestrate. Screens/widgets: UI only.
+- Preserve OpenAI shapes in `LocalApiServerService` (`/v1/models`, `/v1/chat/completions` + stream).
+- Don’t hand-edit Hive `*.g.dart`; use build_runner.
+- Reuse `AppColors` / existing theme helpers.

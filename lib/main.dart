@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:path_provider/path_provider.dart';
 
 import 'models/chat_model.dart';
 import 'models/message_model.dart';
@@ -14,6 +13,7 @@ import 'controllers/theme_controller.dart';
 // ignore: unused_import
 import 'screens/splash_screen.dart'; // needed in routes/app_routes.dart
 import 'routes/app_routes.dart';
+import 'services/app_paths.dart';
 
 Future<void> main() async {
   // Wrap entire app in error zone to catch native/async crashes
@@ -32,9 +32,9 @@ Future<void> main() async {
       return true; // Prevent app from crashing
     };
 
-    // Init Hive
-    final appDir = await getApplicationDocumentsDirectory();
-    await Hive.initFlutter(appDir.path);
+    // All local data under ~/.uncensored-ai (not Documents/)
+    await AppPaths.ensureInitialized();
+    await Hive.initFlutter(AppPaths.hiveDir);
 
     // Register Hive adapters
     Hive.registerAdapter(ChatModelAdapter());
